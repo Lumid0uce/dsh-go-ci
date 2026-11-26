@@ -234,10 +234,6 @@ void main() {
     await openSheet(tester);
     await tester.tap(find.text('家里的 Mac'));
     await frames(tester);
-    // A relay host now opens its backend menu first; picking the DSH backend
-    // is the plain remote session that used to happen on the first tap.
-    await tester.tap(find.byKey(const ValueKey('host-backend-mac-dsh')));
-    await frames(tester);
     expect(find.text('信任这台主机？'), findsOneWidget);
     expect(find.text('3F2A 9C41 07BE'), findsOneWidget);
     await tester.tap(find.text('信任并连接'));
