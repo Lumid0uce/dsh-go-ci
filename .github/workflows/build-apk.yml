@@ -1,0 +1,96 @@
+# Builds the arm64 APK of this branch on a GitHub runner: the release APK carries
+# the whole bundled Linux runtime, so the runtime is built here first
+# (runtime/build-runtime.sh), then tooling/build-apk.sh packages it.
+name: build-apk
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/phone-agent-claude-codex]
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.47.7
+  NODE_VERSION: 24.22.1
+  TZ: Asia/Shanghai
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          lfs: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: pub get
+        working-directory: app
+        run: |
+          # The lockfile was written against the China mirror; ask pub.dev from here.
+          sed -i 's#https://pub.flutter-io.cn#https://pub.dev#g' pubspec.lock
+          flutter pub get
+
+      - name: build deps
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install xz-utils zstd autoconf automake libtool pkg-config bzip2
+
+      - name: Android NDK 28.2.13676358 (tawcroot launcher)
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          yes | "$sdk/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358"
+          ls "$sdk/ndk"
+          # The runner images export ANDROID_NDK_HOME for an older NDK; the tawcroot
+          # launcher is pinned to this one, so point the build at it explicitly.
+          echo "ANDROID_NDK_HOME=$sdk/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: bundled runtime for arm64-v8a
+        run: bash runtime/build-runtime.sh arm64-v8a
+
+      - name: flutter build apk (release, arm64, no companion pack, no star prompt)
+        run: |
+          bash tooling/build-apk.sh -f arm64 --no-companion --no-star
+          cp "$(ls -t app/build/app/outputs/flutter-apk/*.apk | head -1)" "$RUNNER_TEMP/apk-normal-arm64.apk"
+
+      # Side build: package io.github.ccch1mneyyy.dsh_app.test + label "DSH Go test",
+      # so it installs NEXT TO the released app instead of being rejected for a
+      # different signature.
+      - name: flutter build apk (side build, installs next to the release app)
+        run: |
+          bash tooling/build-apk.sh -f arm64 --side --no-companion --no-star
+          cp "$(ls -t app/build/app/outputs/flutter-apk/*.apk | head -1)" "$RUNNER_TEMP/apk-side-arm64.apk"
+
+      - name: what got built
+        if: always()
+        run: |
+          ls -lh app/build/app/outputs/flutter-apk/ "$RUNNER_TEMP"/*.apk || true
+          sha256sum "$RUNNER_TEMP"/*.apk || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-arm64
+          path: |
+            ${{ runner.temp }}/apk-normal-arm64.apk
+            ${{ runner.temp }}/apk-side-arm64.apk
+          retention-days: 5
+          if-no-files-found: error
